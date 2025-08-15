@@ -139,7 +139,7 @@ def analyze_pair(symbol: str):
 # ==========================
 # LOOP PRINCIPAL
 # ==========================
-if _name_ == "_main_":
+if __name__ == "__main__":
     # Mensagem de teste no ARRANQUE apenas
     hora = datetime.now().strftime("%d/%m %H:%M")
     send_telegram_message(f"🚀 Bot iniciado - 📌 Alavancagem Curto\n⏱ {hora}")

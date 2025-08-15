@@ -1,6 +1,6 @@
 import os
-import requests
 import time
+import requests
 import ccxt
 import numpy as np
 from datetime import datetime
@@ -8,132 +8,163 @@ from datetime import datetime
 # ==========================
 # CONFIGURAÇÕES
 # ==========================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-SCAN_SECS = int(os.getenv("SCAN_SECS", 60))  # segundos entre scans
-MIN_PROB = 65  # Probabilidade mínima para enviar sinal
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+CHAT_ID = os.getenv("CHAT_ID", "")
+SCAN_SECS = int(os.getenv("SCAN_SECS", "60"))  # segundos entre scans
+MIN_PROB = 65  # Probabilidade mínima para enviar sinal (em %)
 
-# Lista de moedas para varrimento (par USDT)
+# Lista de moedas (pares USDT) a monitorizar
 PAIRS = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "SUI/USDT", "ENA/USDT", "BNB/USDT", "ADA/USDT", "DOGE/USDT",
-    "LINK/USDT", "HBAR/USDT", "XLM/USDT", "LTC/USDT", "AVAX/USDT", "PENDLE/USDT", "NEAR/USDT", "AAVE/USDT",
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "SUI/USDT", "ENA/USDT",
+    "BNB/USDT", "ADA/USDT", "DOGE/USDT", "LINK/USDT", "HBAR/USDT", "XLM/USDT",
+    "LTC/USDT", "AVAX/USDT", "PENDLE/USDT", "NEAR/USDT", "AAVE/USDT",
     "ALGO/USDT", "RNDR/USDT", "LDO/USDT"
 ]
 
-# Inicializar Binance API via CCXT
+# Inicializar Binance via CCXT
 exchange = ccxt.binance()
 
-# ==========================
-# FUNÇÕES
-# ==========================
-def send_telegram_message(message):
-    """Envia mensagem formatada para o Telegram"""
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        r = requests.post(url, data=payload)
-        if r.status_code != 200:
-            print(f"Erro ao enviar para Telegram: {r.text}")
-    except Exception as e:
-        print(f"Erro Telegram: {e}")
 
-def get_rsi(prices, period=14):
-    """Calcula o RSI"""
+# ==========================
+# AUXILIARES
+# ==========================
+def send_telegram_message(text: str) -> None:
+    """Envia mensagem para o Telegram."""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("[ERRO] BOT_TOKEN/CHAT_ID não definidos nas variáveis do Railway.")
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    try:
+        r = requests.post(url, json=payload, timeout=20)
+        if r.status_code != 200:
+            print(f"[ERRO TG] {r.text}")
+    except Exception as e:
+        print(f"[ERRO TG] {e}")
+
+
+def get_rsi(prices: np.ndarray, period: int = 14) -> np.ndarray:
+    """RSI clássico (vectorizado simples)."""
+    if prices.size < period + 1:
+        return np.zeros_like(prices)
+
     deltas = np.diff(prices)
     seed = deltas[:period]
     up = seed[seed >= 0].sum() / period
     down = -seed[seed < 0].sum() / period
-    rs = up / down if down != 0 else 0
-    rsi = np.zeros_like(prices)
-    rsi[:period] = 100. - 100. / (1. + rs)
+    rs = up / down if down != 0 else 0.0
 
+    rsi = np.zeros_like(prices)
+    rsi[:period] = 100.0 - 100.0 / (1.0 + rs)
+
+    up_avg, down_avg = up, down
     for i in range(period, len(prices)):
         delta = deltas[i - 1]
-        upval, downval = (delta, 0) if delta > 0 else (0, -delta)
-        up = (up * (period - 1) + upval) / period
-        down = (down * (period - 1) + downval) / period
-        rs = up / down if down != 0 else 0
-        rsi[i] = 100. - 100. / (1. + rs)
+        up_val = delta if delta > 0 else 0.0
+        down_val = -delta if delta < 0 else 0.0
+        up_avg = (up_avg * (period - 1) + up_val) / period
+        down_avg = (down_avg * (period - 1) + down_val) / period
+        rs = up_avg / down_avg if down_avg != 0 else 0.0
+        rsi[i] = 100.0 - 100.0 / (1.0 + rs)
     return rsi
 
-def analyze_pair(symbol):
-    """Analisa uma moeda e retorna sinal se cumprir critérios"""
+
+def analyze_pair(symbol: str):
+    """Analisa o par e devolve dict de sinal ou None."""
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe="15m", limit=100)
-        closes = [x[4] for x in ohlcv]
+        closes = np.array([x[4] for x in ohlcv], dtype=float)
+        volumes = np.array([x[5] for x in ohlcv], dtype=float)
 
-        # RSI
-        rsi = get_rsi(np.array(closes))[-1]
+        if closes.size < 50:
+            return None
 
-        # EMA21 e EMA50
-        ema21 = np.mean(closes[-21:])
-        ema50 = np.mean(closes[-50:])
+        # Indicadores
+        rsi_val = float(get_rsi(closes)[-1])
+        ema21 = float(np.mean(closes[-21:]))
+        ema50 = float(np.mean(closes[-50:]))
 
-        # Bollinger Bands
-        sma20 = np.mean(closes[-20:])
-        stddev = np.std(closes[-20:])
-        upper_band = sma20 + (2 * stddev)
-        lower_band = sma20 - (2 * stddev)
+        sma20 = float(np.mean(closes[-20:]))
+        std20 = float(np.std(closes[-20:]))
+        upper = sma20 + 2 * std20
+        lower = sma20 - 2 * std20
 
-        # Volume médio
-        volumes = [x[5] for x in ohlcv]
-        avg_volume = np.mean(volumes[-20:])
-        last_volume = volumes[-1]
+        avg_vol = float(np.mean(volumes[-20:]))
+        last_vol = float(volumes[-1])
+        price = float(closes[-1])
 
-        # Condições de sinal
-        probabilidade = 0
-        direcao = None
-        preco_atual = closes[-1]
+        # Regras simples e objetivas
+        prob = 0
+        side = None
 
-        if rsi < 30 and preco_atual <= lower_band and ema21 > ema50 and last_volume > avg_volume * 1.5:
-            probabilidade = 75
-            direcao = "LONG"
-        elif rsi > 70 and preco_atual >= upper_band and ema21 < ema50 and last_volume > avg_volume * 1.5:
-            probabilidade = 75
-            direcao = "SHORT"
+        # LONG: sobrevenda + toque banda baixa + tendência curta positiva + volume acima média
+        if (rsi_val < 30) and (price <= lower) and (ema21 > ema50) and (last_vol > 1.5 * avg_vol):
+            prob = 75
+            side = "LONG"
 
-        if probabilidade >= MIN_PROB:
-            stop = preco_atual * (0.98 if direcao == "LONG" else 1.02)
-            tp1 = preco_atual * (1.02 if direcao == "LONG" else 0.98)
-            tp2 = preco_atual * (1.04 if direcao == "LONG" else 0.96)
-            alavancagem = "x5"
+        # SHORT: sobrecompra + toque banda alta + tendência curta negativa + volume acima média
+        elif (rsi_val > 70) and (price >= upper) and (ema21 < ema50) and (last_vol > 1.5 * avg_vol):
+            prob = 75
+            side = "SHORT"
+
+        if side and prob >= MIN_PROB:
+            # Gestão simples de níveis
+            if side == "LONG":
+                stop = price * 0.98
+                tp1 = price * 1.02
+                tp2 = price * 1.04
+            else:
+                stop = price * 1.02
+                tp1 = price * 0.98
+                tp2 = price * 0.96
+
             return {
                 "par": symbol,
-                "direcao": direcao,
-                "entrada": round(preco_atual, 4),
-                "stop": round(stop, 4),
-                "tp1": round(tp1, 4),
-                "tp2": round(tp2, 4),
-                "probabilidade": probabilidade,
-                "alavancagem": alavancagem
+                "direcao": side,
+                "entrada": round(price, 6),
+                "stop": round(stop, 6),
+                "tp1": round(tp1, 6),
+                "tp2": round(tp2, 6),
+                "prob": prob,
+                "lev": "x5"
             }
+
         return None
+
     except Exception as e:
-        print(f"Erro a analisar {symbol}: {e}")
+        print(f"[ERRO] {symbol}: {e}")
         return None
+
 
 # ==========================
 # LOOP PRINCIPAL
 # ==========================
 if _name_ == "_main_":
-    agora = datetime.now().strftime("%d/%m %H:%M")
-    send_telegram_message(f"🚀 Bot iniciado - 📌 Alavancagem Curto\n⏱ {agora}")
+    # Mensagem de teste no ARRANQUE apenas
+    hora = datetime.now().strftime("%d/%m %H:%M")
+    send_telegram_message(f"🚀 Bot iniciado - 📌 Alavancagem Curto\n⏱ {hora}")
+
     while True:
         for pair in PAIRS:
             sinal = analyze_pair(pair)
             if sinal:
-                hora_sinal = datetime.now().strftime("%d/%m %H:%M")
+                ts = datetime.now().strftime("%d/%m %H:%M")
                 msg = (
-                    f"📌 <b>Alavancagem Curto</b>\n"
-                    f"⏱ {hora_sinal}\n"
+                    "📌 <b>Alavancagem Curto</b>\n"
+                    f"⏱ {ts}\n"
                     f"Par: {sinal['par']}\n"
                     f"Direção: {sinal['direcao']}\n"
                     f"Entrada: {sinal['entrada']}\n"
                     f"Stop: {sinal['stop']}\n"
                     f"TP1: {sinal['tp1']}\n"
                     f"TP2: {sinal['tp2']}\n"
-                    f"Probabilidade: {sinal['probabilidade']}%\n"
-                    f"Alavancagem: {sinal['alavancagem']}"
+                    f"Probabilidade: {sinal['prob']}%\n"
+                    f"Alavancagem: {sinal['lev']}"
                 )
                 send_telegram_message(msg)
+
+            # pequena pausa entre pares para evitar bursts
+            time.sleep(0.2)
+
+        # aguarda próximo ciclo
         time.sleep(SCAN_SECS)

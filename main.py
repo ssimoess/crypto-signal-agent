@@ -3,6 +3,7 @@ import requests
 import time
 import ccxt
 import numpy as np
+from datetime import datetime
 
 # ==========================
 # CONFIGURAÇÕES
@@ -114,14 +115,17 @@ def analyze_pair(symbol):
 # ==========================
 # LOOP PRINCIPAL
 # ==========================
-if __name__ == "__main__":
-    send_telegram_message("🚀 Bot iniciado - 📌 Alavancagem Curto")
+if _name_ == "_main_":
+    agora = datetime.now().strftime("%d/%m %H:%M")
+    send_telegram_message(f"🚀 Bot iniciado - 📌 Alavancagem Curto\n⏱ {agora}")
     while True:
         for pair in PAIRS:
             sinal = analyze_pair(pair)
             if sinal:
+                hora_sinal = datetime.now().strftime("%d/%m %H:%M")
                 msg = (
                     f"📌 <b>Alavancagem Curto</b>\n"
+                    f"⏱ {hora_sinal}\n"
                     f"Par: {sinal['par']}\n"
                     f"Direção: {sinal['direcao']}\n"
                     f"Entrada: {sinal['entrada']}\n"
